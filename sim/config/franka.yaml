@@ -1,0 +1,5 @@
+livestream: false
+headless: true
+num_envs: 1
+rendering_dt: 0.01
+physics_dt: 0.01
