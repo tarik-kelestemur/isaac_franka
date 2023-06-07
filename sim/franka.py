@@ -70,6 +70,7 @@ class FrankaSim:
         robot_cfg.rigid_props.disable_gravity = True
         self.robot = SingleArmManipulator(cfg=robot_cfg)
         self.robot.spawn("/World/franka", translation=(0.0, 0.0, 1.0))
+        
         self.sim.reset()
         self.robot.initialize("/World/franka")
         # TODO: move this to a config file
@@ -109,33 +110,53 @@ class FrankaSim:
         rgb = self.camera.data.output["rgb"]
         return rgb
 
-    def move_eef(self, pos: torch.Tensor, rot: torch.Tensor):
-        ik_cmd = torch.cat((pos, rot), dim=0).to(self.robot.device).unsqueeze(0)
-        self.ik_solver.set_command(ik_cmd)
+    def move_eef(self, pose: torch.Tensor) -> None:
+        pose = pose.to(self.robot.device)
+        if len(pose.shape) == 1:
+            pose.unsqueeze_(0)
+        self.ik_solver.set_command(pose)
         q_sol = self.ik_solver.compute(
-            self.robot.data.ee_state_b[:, 0:3],
-            self.robot.data.ee_state_b[:, 3:7],
+            self.robot.data.ee_state_w[:, 0:3] - self.robot.data.root_pos_w,
+            self.robot.data.ee_state_w[:, 3:7],
             self.robot.data.ee_jacobian,
             self.robot.data.arm_dof_pos,
         )
+        print(q_sol)
         joint_angle_cmds = torch.zeros((1, self.robot.num_actions), device=self.robot.device)
         joint_angle_cmds[0, : self.robot.arm_num_dof] = q_sol
         arm_command_offset = self.robot.data.actuator_pos_offset[:, : self.robot.arm_num_dof]
         joint_angle_cmds[:, : self.robot.arm_num_dof] -= arm_command_offset
         self.robot.apply_action(joint_angle_cmds)
-        return q_sol 
     
     def run(self) -> None:
         n = 0
-        goal_pos = torch.tensor([0.6, 0.0, 0.4])
-        goal_rot = torch.tensor([0.0, 1.0, 0.0, 0.0])
+        goal_idx = 0
+        sim_dt = self.sim.get_physics_dt()
+        ee_goals = torch.tensor([
+            [0.5, 0.0, 0.2, 0.0, 1.0, 0.0, 0.0],
+            [0.5, 0.0, 0.3, 0.0, 1.0, 0.0, 0.0],
+            [0.5, 0.0, 0.4, 0.0, 1.0, 0.0, 0.0],
+            [0.5, 0.1, 0.2, 0.0, 1.0, 0.0, 0.0],
+            [0.5, 0.2, 0.3, 0.0, 1.0, 0.0, 0.0],
+            [0.5, -0.2, 0.4, 0.0, 1.0, 0.0, 0.0],
+        ], device=self.robot.device)
+        self.robot.update_buffers(sim_dt)
         while sim_app.is_running():
+            print(self.robot.data.arm_dof_pos)
+            if n % 100 == 0:
+                goal_idx = (goal_idx + 1) % len(ee_goals)
+                self.move_eef(pose=ee_goals[goal_idx])
+            # if n > 500:
             self.sim.step()
-            self.robot.update_buffers(self.sim.get_physics_dt())
-            self.goal_marker.set_world_poses(goal_pos.unsqueeze(0), goal_rot.unsqueeze(0))
+            self.robot.update_buffers(sim_dt)
+            
+            
+            
+            # self.goal_marker.set_world_poses(
+            #     ik_cmds[:, :3] + self.robot.data.root_pos_w, ik_cmds[:, 3:]
+                # )
             self.eef_marker.set_world_poses(self.robot.data.ee_state_w[:, 0:3], self.robot.data.ee_state_w[:, 3:7])
-            if n == 50:
-                q_sol = self.move_eef(pos=goal_pos, rot=goal_rot)
+
             n += 1
             print(f"timestep {n}")
         sim_app.close()
